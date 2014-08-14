@@ -1,0 +1,16 @@
+{
+  "name": "the-tech-exhibit",
+  "version": "0.0.0",
+  "description": "Simple demo server for talking to The Tech Museum of Innovation's Smart Museum API",
+  "main": "app.coffee",
+  "directories": {},
+  "dependencies": {
+    "socket.io": "^1.0.6"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "MIT"
+}
