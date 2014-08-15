@@ -1,10 +1,11 @@
 readline = require 'readline'
+request = require 'request'
 io = require('socket.io').listen 8081
 
 handleBarcode = ->
 
 # proxied to the real Smart Museum endpoint using SSH port forwarding
-smartMuseumEndpoint = 'http://localhost:8080/'
+smartMuseumEndpoint = 'http://localhost:8080'
 
 beep = ->
   process.stdout.write '\u0007'
@@ -18,16 +19,27 @@ interaction =
   started: false
   aborted: false
 
-  begin: (callback) ->
+  begin: (num, callback) ->
     if @started
       callback new Error "Attempted to start an interaction, but the Smart Museum interaction already started (end or abort it first)"
       return
     @aborted = false
     @started = true
+    url = "#{smartMuseumEndpoint}/api/Interaction/InteractionBegin?techTagData=#{num}&locationScannerId=94"
+    console.log "requesting #{url}"
 
-    # GET api/Interaction/InteractionBegin?techTagData=555001&locationScannerId=94
-    # -> end interaction immediately if valid return value but interaction was aborted!
-    # -> abort interaction, call errback if error return
+    request.get {url: url, json: true}, (err, response, body) =>
+      console.log "got #{url}, error = #{err?}"
+      if err?
+        @abort()
+        callback err
+        return
+      # if aborted, forget we asked to begin an interaction
+      return if @aborted
+      @techTagId = body[0].TechTagId
+      @id = body[0].InteractionId
+      console.log "techTagId = #{@techTagId}, interactionId=#{@id}"
+      callback null
 
   abort: ->
     @aborted = true
@@ -37,18 +49,62 @@ interaction =
     if not @started or not @techTagId?
       callback new Error "Attempted to save a URL, but the Smart Museum hasn't given us a Tech Tag ID yet"
 
-    # POST /api/Interaction/InteractionCreateLocationResult
-    # techTagId=204&locationScannerId=94&locationDataId=75&textData=http%3A%2F%2Fconcord-consortium.github.io%2Flearning-everywhere%2Fenergy-island.html%23eyJ3aW5kZmFybXMiOlt7IngiOjQ1LCJ5Ijo2NX1dLCJ2aWxsYWdlcyI6W3sieCI6MjMsInkiOjY2fV0sImNvYWxwbGFudHMiOltdLCJwb3dlcmxpbmVzIjpbXX0%3D
+    url = "#{smartMuseumEndpoint}/api/Interaction/InteractionCreateLocationResult"
 
-    # -> save interactionId unless aborted or not started
-    # -> call errback if error (app can decide wheter to continue interaction)
+    console.log "posting to #{url}"
+
+    # POST
+    formData =
+      techTagId: @techTagId
+      locationScannerId: 94
+      locationDataId: 75
+      textData: result
+
+    request.post {url: url, form: formData}, (err, response, body) =>
+      console.log "posted to #{url}, error = #{err?}"
+
+      return if not @started or @aborted
+
+      if err?
+        callback err
+        return
+
+      if typeof body is 'string'
+        body = JSON.parse body
+
+      if body.TechTagId isnt @techTagId
+        callback new Error "Received results for wrong interaction"
+        return
+
+      if not body.Results?[0]?.Data
+        callback new Error "URL does not appear to have been saved on Smart Museum server"
+        return
+
+      callback null
 
   end: (callback) ->
     if not @id?
       @abort()
       process.nextTick callback
 
-    # GET api/Interaction/InteractionEnd?sessionId=38026&completionTypeId=1
+    url = "#{smartMuseumEndpoint}/api/Interaction/InteractionEnd?sessionId=#{@id}&completionTypeId=1"
+    console.log "requesting #{url}"
+
+    request.get {url: url}, (err, response, body) =>
+      console.log "got #{url}, error = #{err?}"
+      if err?
+        callback err
+        @abort()
+        return
+
+      if body.Message isnt "Success"
+        callback new Error "Interaction was not ended!"
+        @abort()
+        return
+
+      @aborted = false
+      @started = false
+      callback null
 
 
 rl = readline.createInterface
@@ -75,15 +131,17 @@ io.on 'connection', (socket) ->
   resume "Connected."
 
   handleBarcode = (num) ->
-    pause "saving data for barcode ${num}..."
-    socket.emit 'request-url'
+    pause "saving data for barcode #{num}..."
 
-    interaction.begin (err) ->
+    interaction.begin num, (err) ->
       if err?
         socket.emit 'error-saving-url', err.message
         resume "couldn't start interaction, scan again"
+        return
+      socket.emit 'request-url'
 
   socket.on 'current-url', (url) ->
+    console.log "got url from client: #{url}"
     interaction.saveResult url, (err) ->
       if err?
         socket.emit 'error-saving-url', err.message
