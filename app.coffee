@@ -1,11 +1,18 @@
 readline = require 'readline'
 request = require 'request'
+express = require 'express'
+
 io = require('socket.io').listen 8081
 
-handleBarcode = ->
-
 # proxied to the real Smart Museum endpoint using SSH port forwarding
-smartMuseumEndpoint = 'http://localhost:8080'
+smartMuseumEndpoint = 'http://localhost:8082'
+
+# ports
+# 8080: server
+# 8081: socket.io connection to client
+# 8082: smart museum api
+
+handleBarcode = ->
 
 beep = ->
   process.stdout.write '\u0007'
@@ -13,7 +20,8 @@ beep = ->
 isInRange = (num) ->
   555001 <= num <= 555010
 
-interaction =
+# singleton object that keeps track of a single ongoing transaction with the Smart Museum system
+makeInteraction = ->
   techTagId: null
   id: null
   started: false
@@ -82,10 +90,24 @@ interaction =
 
       callback null
 
+  getLastResult: (callback) ->
+    url = "#{smartMuseumEndpoint}/api/Interaction/InteractionGetLocationResults?locationId=143&locationDataId=75&techTagId=#{@techTagId}&includeMediaData=false"
+    request.get {url: url, json: true}, (err, response, body) ->
+      if err?
+        callback err
+        return
+
+      if not body[0]?.Results?[0]?.Data
+        callback new Error "Couldn't get URL from Smart Museum system"
+        return
+
+      callback null, body[0].Results[0].Data
+
+
   end: (callback) ->
     if not @id?
       @abort()
-      process.nextTick callback
+      if callback? then process.nextTick callback
 
     url = "#{smartMuseumEndpoint}/api/Interaction/InteractionEnd?sessionId=#{@id}&completionTypeId=1"
     console.log "requesting #{url}"
@@ -93,19 +115,20 @@ interaction =
     request.get {url: url}, (err, response, body) =>
       console.log "got #{url}, error = #{err?}"
       if err?
-        callback err
+        callback? err
         @abort()
         return
 
       if body.Message isnt "Success"
-        callback new Error "Interaction was not ended!"
+        callback? new Error "Interaction was not ended!"
         @abort()
         return
 
       @aborted = false
       @started = false
-      callback null
+      callback? null
 
+interaction = makeInteraction()
 
 rl = readline.createInterface
   input: process.stdin,
@@ -151,3 +174,31 @@ io.on 'connection', (socket) ->
         interaction.end -> resume "Interaction saved!"
 
 pause "Waiting for connection to energy island model..."
+
+
+# server for getting client
+app = express()
+
+app.get '/', (req, res) ->
+  res.send 'visit saved?tag=<tech tag number> to see the saved model'
+
+app.get '/saved', (req, res) ->
+  if not req.query.tag?
+    res.send 'visit saved?tag=<tech tag number> to see the saved model'
+    return
+
+  tagNumber = req.query.tag
+
+  interaction = makeInteraction()
+  interaction.begin tagNumber, (err) ->
+    if err?
+      res.send "Couldn't talk to Smart Museum: #{err.message}"
+      return
+    interaction.getLastResult (err, url) ->
+      if err?
+        res.send "Couldn't get tag information from Smart Museum: #{err.message}"
+        return
+      res.redirect url
+      interaction.end()
+
+app.listen 8080
