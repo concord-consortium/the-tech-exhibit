@@ -6,6 +6,7 @@
   "directories": {},
   "dependencies": {
     "express": "^4.8.4",
+    "request": "^2.40.0",
     "socket.io": "^1.0.6"
   },
   "devDependencies": {},
